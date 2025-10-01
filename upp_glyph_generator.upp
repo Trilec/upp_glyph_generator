@@ -1,0 +1,15 @@
+description "GlyphGenerator — Procedural shape generation\377";
+
+uses
+	Core,
+	CtrlLib,
+	include,
+	Plugin/jpg,
+	Plugin/png;
+
+file
+	main.cpp;
+
+mainconfig
+	"" = "";
+
