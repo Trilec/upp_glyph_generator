@@ -3,7 +3,7 @@ description "GlyphGenerator — Procedural shape generation\377";
 uses
 	Core,
 	CtrlLib,
-	include,
+	GalleryCtrl,
 	Plugin/jpg,
 	Plugin/png;
 
