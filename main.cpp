@@ -39,10 +39,28 @@ using namespace Upp;
 
 enum class LineStyle { Solid, LongDash, ShortDash, Dotted };
 
+struct StyleOverrides : Moveable<StyleOverrides> {
+    // Existing UI colors (you can keep using these in your panel)
+    Color  fillColor     = Color(130, 130, 130);
+    Color  strokeColor   = Color(70,  70,  70);
+    Color  outlineColor  = Color(40,  40,  40);
+
+    // Which channels are overridden?
+    bool   useFill       = false;
+    bool   useStroke     = false;
+    bool   useOutline    = false;
+
+    // symbolic names to write into emitted code when overrides are on
+    String fillName      = "FillCol";
+    String strokeName    = "StrokeCol";
+    String outlineName   = "OutlineCol";
+};
+
+
 
 struct Style : Moveable<Style> {
-    Color  fill        = Color(168, 168, 168);
-    Color  stroke      = Color(53, 53, 53);
+    Color  fill        = Color(120, 120, 120);
+    Color  stroke      = Color(60, 60, 60);
     int    strokeWidth = 2;
     bool   evenOdd     = false;
     String dash;               // freeform "a,b,a,b,..."
@@ -131,8 +149,10 @@ struct Shape : Moveable<Shape> {
 
     // Rect
     double x=0, y=0, w=0, h=0;
-    double rxN=0.0, ryN=0.0;  // corner radii,
-    
+    double rxN=0.0;  // corner radius X (normalized 0..1, relative to inset)
+    double ryN=0.0;  // corner radius Y (normalized 0..1, relative to inset)
+
+
     // Circle
     double cx=0, cy=0, r=0;               // r relative to min(inset w,h)
     // Line / Triangle
@@ -285,6 +305,10 @@ static inline void Pass_Stroke(BufferPainter& p, BuildPath build, const Style& s
 
 // ---------------------------- Code emission helpers ---------------------------
 
+static inline String EX(double nx){ return Format("(int)(inset.left  + inset.Width()  * %s)", Decimal4(nx)); }
+static inline String EY(double ny){ return Format("(int)(inset.top   + inset.Height() * %s)", Decimal4(ny)); }
+static inline String ER(double nr){ return Format("(int)(min(inset.Width(), inset.Height()) * %s)", Decimal4(nr)); }
+
 static inline void EmitDashCode(String& out, LineStyle ls, const String& custom) {
     const String d = DashFrom(ls, custom);
     if(!d.IsEmpty())
@@ -334,7 +358,7 @@ struct PrimitiveOps {
     void (*DragCreate)(Shape&, const Rect&, Point, Point, bool, int);
     void (*BeginEdit)(Shape&, const Rect&, Point, int, double&, double&);
     void (*DragEdit)(Shape&, const Rect&, Point, bool, int, bool, int, double&, double&);
-    void (*EmitCode)(String&, const Shape&);
+    void (*EmitCode)(String&, const Shape&, const StyleOverrides&);
 };
 
 struct ToolSpec : Moveable<ToolSpec> {
@@ -458,47 +482,59 @@ static void Rect_DragEdit(Shape& s, const Rect& inset, Point cur, bool snap, int
     }
 }
 
-static void Rect_EmitCode(String& out, const Shape& s) {
-    const bool rounded = (s.rxN > 0.0 || s.ryN > 0.0);
-    out << "    // Rect\n    p.Begin();\n";
-    if(rounded) {
-        out << "    p.RoundedRectangle("
-            << "X(inset,"<<Decimal4(s.x)<<"), "
-            << "Y(inset,"<<Decimal4(s.y)<<"), "
-            << "X(inset,"<<Decimal4(s.x+s.w)<<")-X(inset,"<<Decimal4(s.x)<<"), "
-            << "Y(inset,"<<Decimal4(s.y+s.h)<<")-Y(inset,"<<Decimal4(s.y)<<"), "
-            << "min(R(inset,"<<Decimal4(s.rxN)<<"), (X(inset,"<<Decimal4(s.x+s.w)<<")-X(inset,"<<Decimal4(s.x)<<"))/2), "
-            << "min(R(inset,"<<Decimal4(s.ryN)<<"), (Y(inset,"<<Decimal4(s.y+s.h)<<")-Y(inset,"<<Decimal4(s.y)<<"))/2)"
-            << ");\n";
-    } else {
-        out << Format(
-            "    p.Move(Pointf(X(inset,%s),Y(inset,%s))); "
-            "p.Line(Pointf(X(inset,%s),Y(inset,%s))); "
-            "p.Line(Pointf(X(inset,%s),Y(inset,%s))); "
-            "p.Line(Pointf(X(inset,%s),Y(inset,%s))); p.Close();\n",
-            Decimal4(s.x), Decimal4(s.y),
-            Decimal4(s.x + s.w), Decimal4(s.y),
-            Decimal4(s.x + s.w), Decimal4(s.y + s.h),
-            Decimal4(s.x),       Decimal4(s.y + s.h)
-        );
+static void Rect_EmitCode(String& out, const Shape& s, const StyleOverrides& ov)
+{
+    const Style& st = s.style;
+
+    out << "    // Rect\n";
+    out << "    p.Begin();\n";
+    out << "    p.Move(Point("  << EX(s.x)         << ", " << EY(s.y)         << "));\n";
+    out << "    p.Line(Point("  << EX(s.x + s.w)   << ", " << EY(s.y)         << "));\n";
+    out << "    p.Line(Point("  << EX(s.x + s.w)   << ", " << EY(s.y + s.h)   << "));\n";
+    out << "    p.Line(Point("  << EX(s.x)         << ", " << EY(s.y + s.h)   << "));\n";
+    out << "    p.Close();\n";
+    EmitOpacityCode(out, st.opacity);
+    if(st.evenOdd) out << "    p.EvenOdd(true);\n";
+    EmitDashCode(out, st.strokeStyle, st.dash);
+
+    if(st.enableFill){
+        if(ov.useFill) out << Format("    p.Fill(%s);  //<- Override\n", ~ov.fillName);
+        else out << Format("    p.Fill(Color(%d,%d,%d));\n", st.fill.GetR(), st.fill.GetG(), st.fill.GetB());
     }
-    EmitOpacityCode(out, s.style.opacity);
-    EmitDashCode(out, s.style.strokeStyle, s.style.dash);
-    if(s.style.evenOdd) out << "    p.EvenOdd(true);\n";
-    if(s.style.enableFill)
-        out << Format("    p.Fill(Color(%d,%d,%d));\n", s.style.fill.GetR(), s.style.fill.GetG(), s.style.fill.GetB());
-    if(s.style.enableStroke)
-        out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", s.style.strokeWidth,
-                      s.style.stroke.GetR(), s.style.stroke.GetG(), s.style.stroke.GetB());
+    if(st.enableStroke){
+        if(ov.useStroke) out << Format("    p.Stroke(%d, %s);  //<- Override\n", st.strokeWidth, ~ov.strokeName);
+        else out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", st.strokeWidth, st.stroke.GetR(), st.stroke.GetG(), st.stroke.GetB());
+    }
     out << "    p.End();\n\n";
+
+    if(st.outlineEnable && st.outlineWidth > 0){
+        out << "    // Rect outline\n";
+        out << "    p.Begin();\n";
+        out << "    p.Move(Point("  << EX(s.x)         << ", " << EY(s.y)         << "));\n";
+        out << "    p.Line(Point("  << EX(s.x + s.w)   << ", " << EY(s.y)         << "));\n";
+        out << "    p.Line(Point("  << EX(s.x + s.w)   << ", " << EY(s.y + s.h)   << "));\n";
+        out << "    p.Line(Point("  << EX(s.x)         << ", " << EY(s.y + s.h)   << "));\n";
+        out << "    p.Close();\n";
+        if(st.outlineOffsetX || st.outlineOffsetY)
+            out << Format("    p.Translate(%d, %d);\n", st.outlineOffsetX, st.outlineOffsetY);
+        double oo = Upp::clamp(st.outlineOpacity, 0.0, 1.0) * Upp::clamp(st.opacity, 0.0, 1.0);
+        if(oo < 1.0) out << Format("    p.Opacity(%.3f);\n", oo);
+        EmitDashCode(out, st.outlineStyle, st.outlineDash);
+        const int W = (st.enableStroke ? st.strokeWidth : 0) + max(1, 2*st.outlineWidth);
+
+        if(ov.useOutline) out << Format("    p.Stroke(%d, %s);  //<- Override\n", W, ~ov.outlineName);
+        else out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", W, st.outlineColor.GetR(), st.outlineColor.GetG(), st.outlineColor.GetB());
+        out << "    p.End();\n\n";
+    }
 }
+
 
 
 // ============================================================================
 // CIRCLE
 // ============================================================================
 
-static inline int Rpx(const Rect& r, double nr) { return int(min(r.Width(), r.Height()) * nr + 0.5); }
+//static inline int Rpx(const Rect& r, double nr) { return int(min(r.Width(), r.Height()) * nr + 0.5); }
 
 static void Circle_EmitPainter(BufferPainter& p, const Rect& inset, const Shape& s) {
     const int cx = X(inset, s.cx);
@@ -594,25 +630,43 @@ static void Circle_DragEdit(Shape& s, const Rect& inset, Point cur, bool snap, i
     }
 }
 
-static void Circle_EmitCode(String& out, const Shape& s) {
-    out << "    // Circle\n    p.Begin();\n";
-    out << Format("    p.Move(Pointf(X(inset,%s)+R(inset,%s), Y(inset,%s)));\n",
-                  Decimal4(s.cx), Decimal4(s.r), Decimal4(s.cy));
-    out << Format("    p.SvgArc(Pointf(R(inset,%s),R(inset,%s)), 0, false, true, "
-                  "Pointf(X(inset,%s)-R(inset,%s), Y(inset,%s)));\n",
-                  Decimal4(s.r), Decimal4(s.r), Decimal4(s.cx), Decimal4(s.r), Decimal4(s.cy));
-    out << Format("    p.SvgArc(Pointf(R(inset,%s),R(inset,%s)), 0, false, true, "
-                  "Pointf(X(inset,%s)+R(inset,%s), Y(inset,%s)));\n",
-                  Decimal4(s.r), Decimal4(s.r), Decimal4(s.cx), Decimal4(s.r), Decimal4(s.cy));
-    EmitOpacityCode(out, s.style.opacity);
-    EmitDashCode(out, s.style.strokeStyle, s.style.dash);
-    if(s.style.enableFill)
-        out << Format("    p.Fill(Color(%d,%d,%d));\n", s.style.fill.GetR(), s.style.fill.GetG(), s.style.fill.GetB());
-    if(s.style.enableStroke)
-        out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", s.style.strokeWidth,
-                      s.style.stroke.GetR(), s.style.stroke.GetG(), s.style.stroke.GetB());
+static void Circle_EmitCode(String& out, const Shape& s, const StyleOverrides& ov)
+{
+    const Style& st = s.style;
+
+    out << "    // Circle\n";
+    out << "    p.Begin();\n";
+    out << "    p.Circle(" << EX(s.cx) << ", " << EY(s.cy) << ", " << ER(s.r) << ");\n";
+    EmitOpacityCode(out, st.opacity);
+    EmitDashCode(out, st.strokeStyle, st.dash);
+
+    if(st.enableFill){
+        if(ov.useFill) out << Format("    p.Fill(%s);  //<- Override\n", ~ov.fillName);
+        else out << Format("    p.Fill(Color(%d,%d,%d));\n", st.fill.GetR(), st.fill.GetG(), st.fill.GetB());
+    }
+    if(st.enableStroke){
+        if(ov.useStroke) out << Format("    p.Stroke(%d, %s);  //<- Override\n", st.strokeWidth, ~ov.strokeName);
+        else out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", st.strokeWidth, st.stroke.GetR(), st.stroke.GetG(), st.stroke.GetB());
+    }
     out << "    p.End();\n\n";
+
+    if(st.outlineEnable && st.outlineWidth > 0){
+        out << "    // Circle outline\n";
+        out << "    p.Begin();\n";
+        out << "    p.Circle(" << EX(s.cx) << ", " << EY(s.cy) << ", " << ER(s.r) << ");\n";
+        if(st.outlineOffsetX || st.outlineOffsetY)
+            out << Format("    p.Translate(%d, %d);\n", st.outlineOffsetX, st.outlineOffsetY);
+        double oo = Upp::clamp(st.outlineOpacity, 0.0, 1.0) * Upp::clamp(st.opacity, 0.0, 1.0);
+        if(oo < 1.0) out << Format("    p.Opacity(%.3f);\n", oo);
+        EmitDashCode(out, st.outlineStyle, st.outlineDash);
+        const int W = (st.enableStroke ? st.strokeWidth : 0) + max(1, 2*st.outlineWidth);
+
+        if(ov.useOutline) out << Format("    p.Stroke(%d, %s);  //<- Override\n", W, ~ov.outlineName);
+        else out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", W, st.outlineColor.GetR(), st.outlineColor.GetG(), st.outlineColor.GetB());
+        out << "    p.End();\n\n";
+    }
 }
+
 
 // ============================================================================
 // LINE
@@ -683,19 +737,45 @@ static void Line_DragEdit(Shape& s, const Rect& inset, Point cur, bool snap, int
     if(hv == 0) s.p1 = Pointf(nx, ny); else s.p2 = Pointf(nx, ny);
 }
 
-static void Line_EmitCode(String& out, const Shape& s) {
-    out << "    // Line\n    p.Begin();\n";
-    out << Format("    p.Move(Pointf(X(inset,%s),Y(inset,%s))); p.Line(Pointf(X(inset,%s),Y(inset,%s)));\n",
-                  Decimal4(s.p1.x), Decimal4(s.p1.y), Decimal4(s.p2.x), Decimal4(s.p2.y));
-    EmitOpacityCode(out, s.style.opacity);
-    EmitDashCode(out, s.style.strokeStyle, s.style.dash);
-    if(s.style.enableStroke)
-        out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", s.style.strokeWidth,
-                      s.style.stroke.GetR(), s.style.stroke.GetG(), s.style.stroke.GetB());
-    if(s.style.enableFill)
-        out << Format("    p.Fill(Color(%d,%d,%d));\n", s.style.fill.GetR(), s.style.fill.GetG(), s.style.fill.GetB());
+static void Line_EmitCode(String& out, const Shape& s, const StyleOverrides& ov)
+{
+    const Style& st = s.style;
+
+    out << "    // Line\n";
+    out << "    p.Begin();\n";
+    out << "    p.Move(Point(" << EX(s.p1.x) << ", " << EY(s.p1.y) << "));\n";
+    out << "    p.Line(Point(" << EX(s.p2.x) << ", " << EY(s.p2.y) << "));\n";
+    EmitOpacityCode(out, st.opacity);
+    EmitDashCode(out, st.strokeStyle, st.dash);
+
+    if(st.enableStroke){
+        if(ov.useStroke) out << Format("    p.Stroke(%d, %s);  //<- Override\n", st.strokeWidth, ~ov.strokeName);
+        else out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", st.strokeWidth, st.stroke.GetR(), st.stroke.GetG(), st.stroke.GetB());
+    }
+    if(st.enableFill){
+        if(ov.useFill) out << Format("    p.Fill(%s);  //<- Override\n", ~ov.fillName);
+        else out << Format("    p.Fill(Color(%d,%d,%d));\n", st.fill.GetR(), st.fill.GetG(), st.fill.GetB());
+    }
     out << "    p.End();\n\n";
+
+    if(st.outlineEnable && st.outlineWidth > 0){
+        out << "    // Line outline\n";
+        out << "    p.Begin();\n";
+        out << "    p.Move(Point(" << EX(s.p1.x) << ", " << EY(s.p1.y) << "));\n";
+        out << "    p.Line(Point(" << EX(s.p2.x) << ", " << EY(s.p2.y) << "));\n";
+        if(st.outlineOffsetX || st.outlineOffsetY)
+            out << Format("    p.Translate(%d, %d);\n", st.outlineOffsetX, st.outlineOffsetY);
+        double oo = Upp::clamp(st.outlineOpacity, 0.0, 1.0) * Upp::clamp(st.opacity, 0.0, 1.0);
+        if(oo < 1.0) out << Format("    p.Opacity(%.3f);\n", oo);
+        EmitDashCode(out, st.outlineStyle, st.outlineDash);
+        const int W = (st.enableStroke ? st.strokeWidth : 0) + max(1, 2*st.outlineWidth);
+
+        if(ov.useOutline) out << Format("    p.Stroke(%d, %s);  //<- Override\n", W, ~ov.outlineName);
+        else out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", W, st.outlineColor.GetR(), st.outlineColor.GetG(), st.outlineColor.GetB());
+        out << "    p.End();\n\n";
+    }
 }
+
 
 // ============================================================================
 // TRIANGLE
@@ -804,26 +884,50 @@ static void Triangle_DragEdit(Shape& s, const Rect& inset, Point cur, bool snap,
     if(hv == 2) s.p3 = Pointf(nx, ny);
 }
 
-static void Triangle_EmitCode(String& out, const Shape& s) {
-    out << "    // Triangle\n    p.Begin();\n";
-    out << Format(
-        "    p.Move(Pointf(X(inset,%s),Y(inset,%s))); "
-        "p.Line(Pointf(X(inset,%s),Y(inset,%s))); "
-        "p.Line(Pointf(X(inset,%s),Y(inset,%s))); p.Close();\n",
-        Decimal4(s.p1.x), Decimal4(s.p1.y),
-        Decimal4(s.p2.x), Decimal4(s.p2.y),
-        Decimal4(s.p3.x), Decimal4(s.p3.y)
-    );
-    EmitOpacityCode(out, s.style.opacity);
-    EmitDashCode(out, s.style.strokeStyle, s.style.dash);
-    if(s.style.evenOdd) out << "    p.EvenOdd(true);\n";
-    if(s.style.enableFill)
-        out << Format("    p.Fill(Color(%d,%d,%d));\n", s.style.fill.GetR(), s.style.fill.GetG(), s.style.fill.GetB());
-    if(s.style.enableStroke)
-        out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", s.style.strokeWidth,
-                      s.style.stroke.GetR(), s.style.stroke.GetG(), s.style.stroke.GetB());
+static void Triangle_EmitCode(String& out, const Shape& s, const StyleOverrides& ov)
+{
+    const Style& st = s.style;
+
+    out << "    // Triangle\n";
+    out << "    p.Begin();\n";
+    out << "    p.Move(Point(" << EX(s.p1.x) << ", " << EY(s.p1.y) << "));\n";
+    out << "    p.Line(Point(" << EX(s.p2.x) << ", " << EY(s.p2.y) << "));\n";
+    out << "    p.Line(Point(" << EX(s.p3.x) << ", " << EY(s.p3.y) << "));\n";
+    out << "    p.Close();\n";
+    EmitOpacityCode(out, st.opacity);
+    if(st.evenOdd) out << "    p.EvenOdd(true);\n";
+    EmitDashCode(out, st.strokeStyle, st.dash);
+
+    if(st.enableFill){
+        if(ov.useFill) out << Format("    p.Fill(%s);  //<- Override\n", ~ov.fillName);
+        else out << Format("    p.Fill(Color(%d,%d,%d));\n", st.fill.GetR(), st.fill.GetG(), st.fill.GetB());
+    }
+    if(st.enableStroke){
+        if(ov.useStroke) out << Format("    p.Stroke(%d, %s);  //<- Override\n", st.strokeWidth, ~ov.strokeName);
+        else out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", st.strokeWidth, st.stroke.GetR(), st.stroke.GetG(), st.stroke.GetB());
+    }
     out << "    p.End();\n\n";
+
+    if(st.outlineEnable && st.outlineWidth > 0){
+        out << "    // Triangle outline\n";
+        out << "    p.Begin();\n";
+        out << "    p.Move(Point(" << EX(s.p1.x) << ", " << EY(s.p1.y) << "));\n";
+        out << "    p.Line(Point(" << EX(s.p2.x) << ", " << EY(s.p2.y) << "));\n";
+        out << "    p.Line(Point(" << EX(s.p3.x) << ", " << EY(s.p3.y) << "));\n";
+        out << "    p.Close();\n";
+        if(st.outlineOffsetX || st.outlineOffsetY)
+            out << Format("    p.Translate(%d, %d);\n", st.outlineOffsetX, st.outlineOffsetY);
+        double oo = Upp::clamp(st.outlineOpacity, 0.0, 1.0) * Upp::clamp(st.opacity, 0.0, 1.0);
+        if(oo < 1.0) out << Format("    p.Opacity(%.3f);\n", oo);
+        EmitDashCode(out, st.outlineStyle, st.outlineDash);
+        const int W = (st.enableStroke ? st.strokeWidth : 0) + max(1, 2*st.outlineWidth);
+
+        if(ov.useOutline) out << Format("    p.Stroke(%d, %s);  //<- Override\n", W, ~ov.outlineName);
+        else out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", W, st.outlineColor.GetR(), st.outlineColor.GetG(), st.outlineColor.GetB());
+        out << "    p.End();\n\n";
+    }
 }
+
 
 // ============================================================================
 // TEXT (top-aligned; no baseline offset)
@@ -956,26 +1060,61 @@ static void Text_DragEdit(Shape& s, const Rect& inset, Point cur, bool snap, int
     }
 }
 
-static void Text_EmitCode(String& out, const Shape& s) {
-    out << "    // Text\n    p.Begin();\n";
-    out << "    { Pointf pen(X(inset,"<<Decimal4(s.x)<<"), Y(inset,"<<Decimal4(s.y)<<")); Font F; "
-           "F.Height(int(inset.Height()*"<<Decimal4(s.text.sizeN)<<"+0.5)); ";
-    if(!s.text.face.IsEmpty()) out << "F.FaceName(\""<<s.text.face<<"\"); ";
-    if(s.text.bold)            out << "F.Bold(); ";
-    if(s.text.italic)          out << "F.Italic(); ";
-    out << "String T=\""<<(s.text.text.IsEmpty() ? String("Text") : s.text.text)<<"\"; "
-           "for(int i=0;i<T.GetCount();++i){ int ch=T[i]; p.Character(pen,ch,F); "
-           "pen.x += GetTextSize(String(ch,1), F).cx; } }\n";
-    EmitOpacityCode(out, s.style.opacity);
-    EmitDashCode(out, s.style.strokeStyle, s.style.dash);
-    if(s.style.evenOdd) out << "    p.EvenOdd(true);\n";
-    if(s.style.enableFill)
-        out << Format("    p.Fill(Color(%d,%d,%d));\n", s.style.fill.GetR(), s.style.fill.GetG(), s.style.fill.GetB());
-    if(s.style.enableStroke)
-        out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", s.style.strokeWidth,
-                      s.style.stroke.GetR(), s.style.stroke.GetG(), s.style.stroke.GetB());
+static void Text_EmitCode(String& out, const Shape& s, const StyleOverrides& ov)
+{
+    const Style& st = s.style;
+    const String T = s.text.text.IsEmpty() ? String("Text") : s.text.text;
+
+    out << "    // Text (TOP-aligned)\n";
+    out << "    p.Begin();\n";
+    out << "    {\n";
+    out << "        Pointf pen(" << EX(s.x) << ", " << EY(s.y) << ");\n";
+    out << "        Font F; F.Height((int)(inset.Height() * " << Decimal4(s.text.sizeN) << " + 0.5));\n";
+    if(!s.text.face.IsEmpty()) out << "        F.FaceName(\"" << s.text.face << "\");\n";
+    if(s.text.bold)            out << "        F.Bold();\n";
+    if(s.text.italic)          out << "        F.Italic();\n";
+    out << "        String T = \"" << T << "\";\n";
+    out << "        for(int i=0;i<T.GetCount();++i){ int ch=T[i]; p.Character(pen,ch,F); pen.x += GetTextSize(String(ch,1),F).cx; }\n";
+    out << "    }\n";
+    EmitOpacityCode(out, st.opacity);
+    if(st.evenOdd) out << "    p.EvenOdd(true);\n";
+    EmitDashCode(out, st.strokeStyle, st.dash);
+
+    if(st.enableFill){
+        if(ov.useFill) out << Format("    p.Fill(%s);  //<- Override\n", ~ov.fillName);
+        else out << Format("    p.Fill(Color(%d,%d,%d));\n", st.fill.GetR(), st.fill.GetG(), st.fill.GetB());
+    }
+    if(st.enableStroke){
+        if(ov.useStroke) out << Format("    p.Stroke(%d, %s);  //<- Override\n", st.strokeWidth, ~ov.strokeName);
+        else out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", st.strokeWidth, st.stroke.GetR(), st.stroke.GetG(), st.stroke.GetB());
+    }
     out << "    p.End();\n\n";
+
+    if(st.outlineEnable && st.outlineWidth > 0){
+        out << "    // Text outline\n";
+        out << "    p.Begin();\n";
+        out << "    {\n";
+        out << "        Pointf pen(" << EX(s.x) << ", " << EY(s.y) << ");\n";
+        out << "        Font F; F.Height((int)(inset.Height() * " << Decimal4(s.text.sizeN) << " + 0.5));\n";
+        if(!s.text.face.IsEmpty()) out << "        F.FaceName(\"" << s.text.face << "\");\n";
+        if(s.text.bold)            out << "        F.Bold();\n";
+        if(s.text.italic)          out << "        F.Italic();\n";
+        out << "        String T = \"" << T << "\";\n";
+        out << "        for(int i=0;i<T.GetCount();++i){ int ch=T[i]; p.Character(pen,ch,F); pen.x += GetTextSize(String(ch,1),F).cx; }\n";
+        out << "    }\n";
+        if(st.outlineOffsetX || st.outlineOffsetY)
+            out << Format("    p.Translate(%d, %d);\n", st.outlineOffsetX, st.outlineOffsetY);
+        double oo = Upp::clamp(st.outlineOpacity, 0.0, 1.0) * Upp::clamp(st.opacity, 0.0, 1.0);
+        if(oo < 1.0) out << Format("    p.Opacity(%.3f);\n", oo);
+        EmitDashCode(out, st.outlineStyle, st.outlineDash);
+        const int W = (st.enableStroke ? st.strokeWidth : 0) + max(1, 2*st.outlineWidth);
+
+        if(ov.useOutline) out << Format("    p.Stroke(%d, %s);  //<- Override\n", W, ~ov.outlineName);
+        else out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", W, st.outlineColor.GetR(), st.outlineColor.GetG(), st.outlineColor.GetB());
+        out << "    p.End();\n\n";
+    }
 }
+
 
 // ============================================================================
 // CURVE (Quadratic / Cubic; open/closed)
@@ -1074,32 +1213,66 @@ static void Curve_DragEdit(Shape& s, const Rect& inset, Point cur, bool snap, in
     }
 }
 
-static void Curve_EmitCode(String& out, const Shape& s) {
+static void Curve_EmitCode(String& out, const Shape& s, const StyleOverrides& ov)
+{
+    const Style& st = s.style;
     const CurveData& c = s.curve;
-    out << "    // Curve\n    p.Begin();\n";
-    out << Format("    p.Move(Pointf(X(inset,%s),Y(inset,%s)));\n", Decimal4(c.a0.x), Decimal4(c.a0.y));
+
+    out << "    // Curve\n";
+    out << "    p.Begin();\n";
+    out << "    p.Move(Point(" << EX(c.a0.x) << ", " << EY(c.a0.y) << "));\n";
     if(c.cubic)
-        out << Format("    p.Cubic(Pointf(X(inset,%s),Y(inset,%s)), "
-                      "Pointf(X(inset,%s),Y(inset,%s)), Pointf(X(inset,%s),Y(inset,%s)));\n",
-                      Decimal4(c.c0.x), Decimal4(c.c0.y),
-                      Decimal4(c.c1.x), Decimal4(c.c1.y),
-                      Decimal4(c.a1.x), Decimal4(c.a1.y));
+        out << "    p.Cubic(Point(" << EX(c.c0.x) << ", " << EY(c.c0.y) << "), "
+            << "Point(" << EX(c.c1.x) << ", " << EY(c.c1.y) << "), "
+            << "Point(" << EX(c.a1.x) << ", " << EY(c.a1.y) << "));\n";
     else
-        out << Format("    p.Quadratic(Pointf(X(inset,%s),Y(inset,%s)), "
-                      "Pointf(X(inset,%s),Y(inset,%s)));\n",
-                      Decimal4(c.c0.x), Decimal4(c.c0.y),
-                      Decimal4(c.a1.x), Decimal4(c.a1.y));
+        out << "    p.Quadratic(Point(" << EX(c.c0.x) << ", " << EY(c.c0.y) << "), "
+            << "Point(" << EX(c.a1.x) << ", " << EY(c.a1.y) << "));\n";
     if(c.closed) out << "    p.Close();\n";
-    EmitOpacityCode(out, s.style.opacity);
-    EmitDashCode(out, s.style.strokeStyle, s.style.dash);
-    if(s.style.evenOdd) out << "    p.EvenOdd(true);\n";
-    if(c.closed && s.style.enableFill)
-        out << Format("    p.Fill(Color(%d,%d,%d));\n", s.style.fill.GetR(), s.style.fill.GetG(), s.style.fill.GetB());
-    if(s.style.enableStroke)
-        out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", s.style.strokeWidth,
-                      s.style.stroke.GetR(), s.style.stroke.GetG(), s.style.stroke.GetB());
+
+    EmitOpacityCode(out, st.opacity);
+    if(st.evenOdd) out << "    p.EvenOdd(true);\n";
+    EmitDashCode(out, st.strokeStyle, st.dash);
+
+    if(c.closed && st.enableFill){
+        if(ov.useFill) out << Format("    p.Fill(%s);  //<- Override\n", ~ov.fillName);
+        else  out << Format("    p.Fill(Color(%d,%d,%d));\n", st.fill.GetR(), st.fill.GetG(), st.fill.GetB());
+    }
+    if(st.enableStroke){
+        if(ov.useStroke) out << Format("    p.Stroke(%d, %s);  //<- Override\n", st.strokeWidth, ~ov.strokeName);
+        else out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", st.strokeWidth, st.stroke.GetR(), st.stroke.GetG(), st.stroke.GetB());
+    }
     out << "    p.End();\n\n";
+
+    if(st.outlineEnable && st.outlineWidth > 0){
+        out << "    // Curve outline\n";
+        out << "    p.Begin();\n";
+        out << "    p.Move(Point(" << EX(c.a0.x) << ", " << EY(c.a0.y) << "));\n";
+        if(c.cubic)
+            out << "    p.Cubic(Point(" << EX(c.c0.x) << ", " << EY(c.c0.y) << "), "
+                << "Point(" << EX(c.c1.x) << ", " << EY(c.c1.y) << "), "
+                << "Point(" << EX(c.a1.x) << ", " << EY(c.a1.y) << "));\n";
+        else
+            out << "    p.Quadratic(Point(" << EX(c.c0.x) << ", " << EY(c.c0.y) << "), "
+                << "Point(" << EX(c.a1.x) << ", " << EY(c.a1.y) << "));\n";
+        if(c.closed) out << "    p.Close();\n";
+
+        if(st.outlineOffsetX || st.outlineOffsetY)
+            out << Format("    p.Translate(%d, %d);\n", st.outlineOffsetX, st.outlineOffsetY);
+
+        const double oo = Upp::clamp(st.outlineOpacity, 0.0, 1.0) * Upp::clamp(st.opacity, 0.0, 1.0);
+        if(oo < 1.0) out << Format("    p.Opacity(%.3f);\n", oo);
+
+        EmitDashCode(out, st.outlineStyle, st.outlineDash);
+        const int W = (st.enableStroke ? st.strokeWidth : 0) + max(1, 2*st.outlineWidth);
+
+        if(ov.useOutline) out << Format("    p.Stroke(%d, %s);  //<- Override\n", W, ~ov.outlineName);
+        else out << Format("    p.Stroke(%d, Color(%d,%d,%d));\n", W, st.outlineColor.GetR(), st.outlineColor.GetG(), st.outlineColor.GetB());
+
+        out << "    p.End();\n\n";
+    }
 }
+
 
 // =============================== Registry build ==============================
 
@@ -1880,7 +2053,12 @@ struct MainWin : TopWindow {
     Button      bCopy,bLoad,bSave;
     DocEdit     code;
     Button     bExportPNG, bExportJPG, bExportICO;
+    Array<Button> toolBtns;   // owns the tool buttons; 
     
+	Option cbOverrideFill,	cbOverrideStroke,	cbOverrideOutline;
+	ColorPusher cOverrideFill,	cOverrideStroke, cOverrideOutline;
+	Label lblOverride ,lblExport, lblFile;
+	
     // Canvas
     Canvas canvas;
 
@@ -1891,14 +2069,30 @@ void UpdateCode() {
     const int H = int(double(W) * a.h / a.w + 0.5);
 
     String out;
+    StyleOverrides ov;
+    
+     // mirror current UI toggles and ColorPushers
+    ov.useFill    = (bool)~cbOverrideFill;
+    ov.useStroke  = (bool)~cbOverrideStroke;
+    ov.useOutline = (bool)~cbOverrideOutline; 
+    ov.fillColor   = (Color)~cOverrideFill;
+    ov.strokeColor = (Color)~cOverrideStroke;
+    ov.outlineColor= (Color)~cOverrideOutline;
 
-    // The generated function expects X/Y/R(inset, …) helpers to exist in scope,
-    // If your destination file doesn’t already have them, include:
-    //   static inline int X(const Rect& r,double nx){return r.left+int(r.Width()*nx+0.5);}
-    //   static inline int Y(const Rect& r,double ny){return r.top +int(r.Height()*ny+0.5);}
-    //   static inline int R(const Rect& r,double nr){return int(min(r.Width(),r.Height())*nr+0.5);}
 
-    out << "void DrawIcon(Draw& w, const Rect& inset)\n{\n";
+    if(ov.useFill)    out << Format("Color _FillColor    = Color(%d,%d,%d);\n",    ov.fillColor.GetR(),    ov.fillColor.GetG(),    ov.fillColor.GetB());
+    if(ov.useStroke)  out << Format("Color _StrokeColor  = Color(%d,%d,%d);\n",    ov.strokeColor.GetR(),  ov.strokeColor.GetG(),  ov.strokeColor.GetB());
+    if(ov.useOutline) out << Format("Color _OutlineColor = Color(%d,%d,%d);\n\n",  ov.outlineColor.GetR(), ov.outlineColor.GetG(), ov.outlineColor.GetB());
+    String fillName      = "FillCol";
+    String strokeName    = "StrokeCol";
+    String outlineName   = "OutlineCol";
+    
+    // Build function signature with ONLY the selected params
+    out << "void DrawIcon(Draw& w, const Rect& inset";
+    if(ov.useFill)    out << ", Color& " << ov.fillName;
+    if(ov.useStroke)  out << ", Color& " << ov.strokeName;
+    if(ov.useOutline) out << ", Color& " << ov.outlineName;
+    out << ")\n\n{\n";
     out << "    BufferPainter p(w, MODE_ANTIALIASED);\n\n";
 
     // Optional background fill, mapped to the full inset.
@@ -1916,13 +2110,11 @@ void UpdateCode() {
 
     // Emit per-primitive BufferPainter code using normalized coordinates.
     for(const Shape& s : canvas.shapes)
-        GetOps(s.type).EmitCode(out, s);
+        GetOps(s.type).EmitCode(out, s, ov);
 
     out << "}\n";
-
     code <<= out;
 }
-
 
 
     void PushStyleToUI() {
@@ -1960,21 +2152,19 @@ void UpdateCode() {
         esOutlineOffY <<= st.outlineOffsetY;
         
          // Rect radii (px preview of normalized)
-	    const Rect ir = canvas.GetInsetRect();
-	    const int base = min(ir.Width(), ir.Height());
-	    const bool isRect = (sh.type == PType::Rect);
-	    
-	    const Rect IconSize(0,0,64,64); 
-	    
-	    spinRectRx.Enable(isRect);
+		const Rect ir = canvas.GetInsetRect();
+		const int base = min(ir.Width(), ir.Height());
+		const bool isRect = (sh.type == PType::Rect);
+		// allow up to half the smallest side in pixels
+
+		spinRectRx.MinMax(0, base / 2);
+		spinRectRy.MinMax(0, base / 2);
+
+	    spinRectRx.Enable(isRect); //perhpas not needed
 	    spinRectRy.Enable(isRect);
-	    if(isRect) {
-	        spinRectRx <<= max(0, int(sh.rxN * base + 0.5));
-	        spinRectRy <<= max(0, int(sh.ryN * base + 0.5));
-	    } else {
-	        spinRectRx <<= 0;
-	        spinRectRy <<= 0;
-	    }
+	    
+
+        
         
 
         // If Text selected: mirror text & font selection
@@ -2070,7 +2260,11 @@ void UpdateCode() {
     }
 
     void OnSelectionChanged() { PushStyleToUI(); }
-    void OnShapesChanged()    { UpdateCode(); }
+    void OnShapesChanged() {
+    	PushStyleToUI();   // keep ranges/values in sync after edits
+    	UpdateCode();
+	}
+
     void OnCopyCode()         { WriteClipboardText(~code); PromptOK("Code copied to clipboard."); }
 
     // --- simple horizontal cursor for row layout
@@ -2081,22 +2275,41 @@ void UpdateCode() {
     }
 
     // Tool buttons
-    void BuildToolButtons() {
-        int x = 6;
-        toolbox.Add(bCursor.LeftPos(x, 80).VSizePos(6, 6));
-        bCursor.SetLabel("Cursor");
-        bCursor << [=] { canvas.tool = Tool::Cursor; };
-        x += 86;
+	void BuildToolButtons()
+	{
+	    toolBtns.Clear();
+	
+	    int x = 6;
+	
+	    // Cursor button (already a member)
+	    toolbox.Add(bCursor.LeftPos(x, 80).VSizePos(6, 6));
+	    bCursor.SetLabel("Cursor");
+	    bCursor.WhenAction = [this] { canvas.tool = Tool::Cursor; };
+	    x += 86;
+	
+	    // One button per ToolSpec, owned by Array<Button>
+	    const Vector<ToolSpec>& specs = GetToolSpecs();
+	    toolBtns.SetCount(specs.GetCount()); // pre-allocate
+	
+	    for(int i = 0; i < specs.GetCount(); ++i) {
+	        const ToolSpec& sp = specs[i];
+	        Button& b = toolBtns[i]; // constructed in-place, owned by 'toolBtns'
+	
+	        b.SetLabel(sp.label);
+	        b.Tip(sp.tip);
+	
+	        // Capture the enum value by copy to avoid dangling refs
+	        const PType t = sp.type;
+	        b.WhenAction = [this, t] {
+	            canvas.tool = Tool::CreateShape;
+	            canvas.creation_type = t;
+	        };
+	
+	        toolbox.Add(b.LeftPos(x, 90).VSizePos(6, 6));
+	        x += 96;
+	    }
+	}
 
-        for(const ToolSpec& sp : GetToolSpecs()) {
-            Button& b = *new Button;
-            b.SetLabel(sp.label);
-            b.Tip(sp.tip);
-            b.WhenAction = [=] { canvas.tool = Tool::CreateShape; canvas.creation_type = sp.type; };
-            toolbox.Add(b.LeftPos(x, 90).VSizePos(6, 6));
-            x += 96;
-        }
-    }
 
     // System fonts → DropList (Font enumeration in Draw.h)  :contentReference[oaicite:5]{index=5}
     void LoadSystemFonts() {
@@ -2142,46 +2355,48 @@ void UpdateCode() {
         UpdateCode();
     }
     // Render the current canvas content to an Image of size W x H (no grid/frames)
-Image RenderToImage(int W, int H) {
-    ImageBuffer ib(Size(W, H));
-    ib.SetKind(IMAGE_OPAQUE);
-    BufferPainter p(ib, MODE_ANTIALIASED);
-
-    // Background
-    p.Clear(canvas.bg_enabled ? canvas.bg_color : White());
-
-    // Build a "logical inset" matching full image
-    const Rect inset = RectC(0, 0, W, H);
-
-    // Optional clip (same semantics as canvas)
-    if (canvas.clip) {
-        p.Begin();
-        p.Move(Pointf(inset.left, inset.top));
-        p.Line(Pointf(inset.right, inset.top));
-        p.Line(Pointf(inset.right, inset.bottom));
-        p.Line(Pointf(inset.left, inset.bottom));
-        p.Close();
-        p.Clip();
-    }
-
-    // Emit all shapes into this painter with the local inset
-    for (const Shape& s : canvas.shapes)
-        GetOps(s.type).EmitPainter(p, inset, s);
-
-    if (canvas.clip) p.End();
-
-    return Image(ib);
-}
+	Image RenderToImage(int W, int H) {
+	    ImageBuffer ib(Size(W, H));
+	    ib.SetKind(IMAGE_OPAQUE);
+	    BufferPainter p(ib, MODE_ANTIALIASED);
+	
+	    // Background
+	    p.Clear(canvas.bg_enabled ? canvas.bg_color : White());
+	
+	    // Build a "logical inset" matching full image
+	    const Rect inset = RectC(0, 0, W, H);
+	
+	    // Optional clip (same semantics as canvas)
+	    if (canvas.clip) {
+	        p.Begin();
+	        p.Move(Pointf(inset.left, inset.top));
+	        p.Line(Pointf(inset.right, inset.top));
+	        p.Line(Pointf(inset.right, inset.bottom));
+	        p.Line(Pointf(inset.left, inset.bottom));
+	        p.Close();
+	        p.Clip();
+	    }
+	
+	    // Emit all shapes into this painter with the local inset
+	    for (const Shape& s : canvas.shapes)
+	        GetOps(s.type).EmitPainter(p, inset, s);
+	
+	    if (canvas.clip) p.End();
+	
+	    return Image(ib);
+	}
 
 	// Minimal ICO writer that wraps one PNG as a PNG-compressed .ico (Vista+)
 	bool SaveSinglePngAsIco(const String& fn, const Image& img) {
-	    // Encode PNG to memory
-	    String png;
-	    {
-	        StringStream ss;
-	       // if(!PNGEncoder().Save(ss, img)) return false;
-	        png = ss.GetResult();
-	    }
+		// Encode PNG to memory
+		String png;
+		{
+		    StringStream  ss;           // or StringStream ss;
+		    PNGEncoder().Save(ss, img);  // Save() is void
+		    if(ss.IsError())             // check the stream status
+		        return false;
+		    png = ss.GetResult();
+		}
 	
 	    FileOut out(fn);
 	    if(!out) return false;
@@ -2263,7 +2478,6 @@ Image RenderToImage(int W, int H) {
 		lblAspect.SetText("Aspect Ratio");
 		rowOps.Add(lblAspect.LeftPos(ColPos(70), 70).VCenterPos());
 		rowOps.Add(dlAspect.LeftPos(ColPos(60), 60).VCenterPos());
-
 		lblSample.SetText("Preview");
 		dlSampleRes.Add(0, "None");
 		dlSampleRes.Add(32, "32");
@@ -2299,8 +2513,6 @@ Image RenderToImage(int W, int H) {
 		edGrid.MinMax(2, 64);
 		rowOps.Add(edGrid.LeftPos(ColPos(60), 60).VCenterPos());
 	    
-
-
 		// ---- Actions row
 		rowActions.SetFrame(ThinInsetFrame());
 
@@ -2348,7 +2560,8 @@ Image RenderToImage(int W, int H) {
 		sFillOpacity <<= 100;
 		rowStyle.Add(sFillOpacity.LeftPos(ColPos(175), 120).TopPos(y, h));
 	  
-        cbEvenOdd.SetLabel("EvenOdd");
+	    cbEvenOdd.SetLabel("EvenOdd");
+        cbEvenOdd.Tip("switches the painter from the default Non-Zero (winding) rule to the Even-Odd rule when filling paths.");
 		rowStyle.Add(cbEvenOdd.LeftPos(ColPos(80), 80).TopPos(y, h));
 
 		y += h + rowPad;
@@ -2456,6 +2669,8 @@ Image RenderToImage(int W, int H) {
 		rowStyle.Add(cbItalic.LeftPos(ColPos(40), 40).TopPos(y, h));
 
 	    ::Style def; // default ctor values (fill=163,201,168; stroke=30,53,47; etc.)
+	    ::StyleOverrides defOv; // default ctor values for overides
+	    
 	    // toggles
 	    cbFill       = def.enableFill;
 	    cbStroke     = def.enableStroke;
@@ -2479,13 +2694,52 @@ Image RenderToImage(int W, int H) {
 		rowCanvas.Add(canvas.SizePos());
 		canvas.WhenSelection = THISBACK(OnSelectionChanged);
 		canvas.WhenShapesChanged = THISBACK(OnShapesChanged);
-
-		right.Add(codeHdr.TopPos(0, 32).HSizePos());
-		right.Add(code.VSizePos(32, 0).HSizePos());
+		
+		int CodeHeaderSize = ((h+rowPad)*4)+rowPad;
+		right.Add(codeHdr.TopPos(0, CodeHeaderSize).HSizePos());
+		right.Add(code.VSizePos(CodeHeaderSize, 0).HSizePos());
 		codeHdr.SetFrame(ThinInsetFrame());
 		codeHdr.Add(codeHdrBox.SizePos());
 	
-	    codeTitle.SetText("Generated code");
+		y = rowPad;
+		
+		lblFile.SetText("File");
+		codeHdrBox.Add(lblFile.LeftPos(ColPos(100,true), 100).TopPos(y, h));
+		bSave.SetLabel("Save"); codeHdrBox.Add(bSave.LeftPos(ColPos(70), 70).TopPos(y, h));
+		bLoad.SetLabel("Load"); codeHdrBox.Add(bLoad.LeftPos(ColPos(70), 70).TopPos(y, h));
+		bClear.SetLabel("Clear");
+		codeHdrBox.Add(bClear.LeftPos(ColPos(70), 70).TopPos(y, h));
+		bCopy.SetLabel("Clipboard");
+		codeHdrBox.Add(bCopy.LeftPos(ColPos(70), 70).TopPos(y, h));
+		
+		y += rowPad+h; lblExport.SetText("Exports");
+		
+		codeHdrBox.Add(lblExport.LeftPos(ColPos(100,true), 100).TopPos(y, h));
+		bExportPNG.SetLabel("Export PNG"); codeHdrBox.Add(bExportPNG.LeftPos(ColPos(70), 70).TopPos(y, h));
+		bExportJPG.SetLabel("Export JPG"); codeHdrBox.Add(bExportJPG.LeftPos(ColPos(70), 70).TopPos(y, h));
+		bExportICO.SetLabel("Export ICO"); codeHdrBox.Add(bExportICO.LeftPos(ColPos(70), 70).TopPos(y, h));
+		
+		y += rowPad+h; cOverrideFill <<= defOv.fillColor;
+		
+		cOverrideStroke <<= defOv.strokeColor; cOverrideOutline <<= defOv.outlineColor;
+		lblOverride.SetText("Override Colors");
+		codeHdrBox.Add(lblOverride.LeftPos(ColPos(100,true), 100).TopPos(y, h));
+		cbOverrideFill.SetLabel("Fill");
+		codeHdrBox.Add(cbOverrideFill.LeftPos(ColPos(40), 40).TopPos(y, h));
+		codeHdrBox.Add(cOverrideFill.LeftPos(ColPos(50), 40).TopPos(y, h));
+		cbOverrideStroke.SetLabel("Stroke");
+		codeHdrBox.Add(cbOverrideStroke.LeftPos(ColPos(50), 50).TopPos(y, h)); codeHdrBox.Add(cOverrideStroke.LeftPos(ColPos(50), 40).TopPos(y, h));
+		cbOverrideOutline.SetLabel("Outline"); codeHdrBox.Add(cbOverrideOutline.LeftPos(ColPos(60), 60).TopPos(y, h));
+		codeHdrBox.Add(cOverrideOutline.LeftPos(ColPos(50), 40).TopPos(y, h));
+		
+		y += rowPad+h;
+		
+		codeTitle.SetText("Code Output");
+		codeHdrBox.Add(codeTitle.LeftPos(ColPos(100,true), 100).TopPos(y, h));
+	
+	
+	
+/*	    codeTitle.SetText("Generated code");
         codeHdrBox.Add(codeTitle.LeftPos(6, 300).VCenterPos());
 	    
 	    int xbtn = 6;
@@ -2514,7 +2768,7 @@ Image RenderToImage(int W, int H) {
 		xbtn += colPad + 60;
 		bExportICO.SetLabel("Export ICO");
 		codeHdrBox.Add(bExportICO.RightPos(xbtn, 60).VCenterPos());
-
+*/
 		// Actions wiring (members)
 		bDup << [=] {
 			canvas.DuplicateSelected();
@@ -2614,6 +2868,13 @@ Image RenderToImage(int W, int H) {
 		esOutlineOffY.WhenAction = THISBACK(PullStyleFromUI);
 		spinRectRx.WhenAction = THISBACK(PullStyleFromUI);
         spinRectRy.WhenAction = THISBACK(PullStyleFromUI);
+        
+        cbOverrideFill.WhenAction = THISBACK(UpdateCode);
+        cbOverrideStroke.WhenAction = THISBACK(UpdateCode);
+        cbOverrideOutline.WhenAction = THISBACK(UpdateCode);
+        cOverrideFill.WhenAction = THISBACK(UpdateCode);
+		cOverrideStroke.WhenAction = THISBACK(UpdateCode);
+		cOverrideOutline.WhenAction = THISBACK(UpdateCode);
 
 		// Dash presets
 		dlStrokeType.WhenAction = [this] {
