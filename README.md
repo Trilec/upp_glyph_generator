@@ -1,6 +1,6 @@
 # U++ Icon Builder — Modular Primitives (single-file)
 
-An opinionated **U++ (Ultimate++)** demo app for drawing simple vector primitives
+A **U++ (Ultimate++)** demo app for drawing simple vector primitives
 (**Rect, Circle, Line, Triangle, Curve, Text**) on a clipped inset canvas using
 **normalized geometry** (0..1). The left pane hosts tools, style, and actions;
 the right pane shows **live BufferPainter code** that reproduces your drawing.
@@ -10,10 +10,8 @@ the right pane shows **live BufferPainter code** that reproduces your drawing.
 ---
 
 ## Screenshot / Hero
-<!-- Replace this with an actual image after the first GitHub Actions build -->
-<p align="center">
-  <img src="docs/app_screenshot.png" alt="U++ Icon Builder UI" width="720"/>
-</p>
+<img width="1252" height="708" alt="image" src="https://github.com/user-attachments/assets/67f3e2fc-7bb7-4902-aad0-ff5244245da5" />
+
 
 ---
 
