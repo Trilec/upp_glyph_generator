@@ -2738,37 +2738,6 @@ void UpdateCode() {
 		codeHdrBox.Add(codeTitle.LeftPos(ColPos(100,true), 100).TopPos(y, h));
 	
 	
-	
-/*	    codeTitle.SetText("Generated code");
-        codeHdrBox.Add(codeTitle.LeftPos(6, 300).VCenterPos());
-	    
-	    int xbtn = 6;
-		bCopy.SetLabel("Copy");
-		codeHdrBox.Add(bCopy.RightPos(xbtn, 60).VCenterPos());
-        
-        xbtn += colPad+60;
-		bSave.SetLabel("Save");
-		codeHdrBox.Add(bSave.RightPos(xbtn, 60).VCenterPos());
-		
-		xbtn += colPad+60;
-		bLoad.SetLabel("Load");
-		codeHdrBox.Add(bLoad.RightPos(xbtn, 60).VCenterPos());
-		
-		xbtn += colPad+60;
-		codeHdrBox.Add(bClear.SetLabel("Clear").RightPos(xbtn, 60).VCenterPos());
-
-		xbtn += colPad + 60;
-		bExportPNG.SetLabel("Export PNG");
-		codeHdrBox.Add(bExportPNG.RightPos(xbtn, 60).VCenterPos());
-		
-		xbtn += colPad + 60;
-		bExportJPG.SetLabel("Export JPG");
-		codeHdrBox.Add(bExportJPG.RightPos(xbtn, 60).VCenterPos());
-		
-		xbtn += colPad + 60;
-		bExportICO.SetLabel("Export ICO");
-		codeHdrBox.Add(bExportICO.RightPos(xbtn, 60).VCenterPos());
-*/
 		// Actions wiring (members)
 		bDup << [=] {
 			canvas.DuplicateSelected();
